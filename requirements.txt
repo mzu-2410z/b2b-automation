@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────
+# requirements.txt — B2B Arbitrage Agency
+# Install: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────
+
+# AI Engine
+groq>=0.9.0
+
+# Google Sheets CRM
+gspread>=6.0.0
+google-auth>=2.28.0
+
+# Web Scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.1.0          # Faster HTML parser for BeautifulSoup
+
+# Email (built-in to Python — no install needed)
+# smtplib  ← stdlib
+# imaplib  ← stdlib
+# email    ← stdlib
+
+# Utilities (built-in — no install needed)
+# time     ← stdlib
+# random   ← stdlib
+# logging  ← stdlib
+# argparse ← stdlib
