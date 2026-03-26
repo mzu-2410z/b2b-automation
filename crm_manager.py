@@ -1,38 +1,29 @@
 """
 crm_manager.py
---------------
+──────────────
 All interactions with the Google Sheets CRM.
+Google credentials and sheet names are loaded from config.py → .env.
 
 Sheet columns (A–F):
   A: business_name
   B: website
   C: email
-  D: status          ← one of: pending | unanswered | not interested | closed client
+  D: status          ← pending | unanswered | not interested | closed client
   E: date_added
   F: last_updated
-
-Setup:
-  1. Create a Google Cloud project.
-  2. Enable Google Sheets API + Google Drive API.
-  3. Create a Service Account and download credentials JSON.
-  4. Share your target Google Sheet with the service account email.
 """
 
 import logging
 from datetime import datetime
+from pathlib import Path
+
 import gspread
 from google.oauth2.service_account import Credentials
 
+from config import cfg
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [CRM] %(message)s")
 logger = logging.getLogger(__name__)
-
-# ──────────────────────────────────────────────
-# USER CONFIG — paste your values here
-# ──────────────────────────────────────────────
-SERVICE_ACCOUNT_FILE = "credentials.json"        # ← path to your downloaded GCP service account JSON
-SPREADSHEET_NAME     = "B2B Agency CRM"          # ← exact name of your Google Sheet
-WORKSHEET_NAME       = "Leads"                   # ← tab name inside the sheet
-# ──────────────────────────────────────────────
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -41,7 +32,6 @@ SCOPES = [
 
 VALID_STATUSES = {"pending", "unanswered", "not interested", "closed client"}
 
-# Column index mapping (1-based for gspread)
 COL = {
     "business_name": 1,
     "website":       2,
@@ -54,46 +44,49 @@ COL = {
 HEADER_ROW = ["business_name", "website", "email", "status", "date_added", "last_updated"]
 
 
-# ── Connection ─────────────────────────────────
+# ── Connection ───────────────────────────────────────────────────
 
 def _get_worksheet() -> gspread.Worksheet:
-    """Authenticate and return the target worksheet object."""
-    creds  = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    """Authenticate using service account from cfg and return the target worksheet."""
+    creds_path = cfg.google_service_account_path   # resolved absolute Path
+
+    if not creds_path.exists():
+        raise FileNotFoundError(
+            f"Google service account file not found: {creds_path}\n"
+            "Set GOOGLE_SERVICE_ACCOUNT_FILE in your .env file."
+        )
+
+    creds  = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
     client = gspread.authorize(creds)
-    sheet  = client.open(SPREADSHEET_NAME)
+    sheet  = client.open(cfg.GOOGLE_SPREADSHEET_NAME)
 
-    # Create worksheet if it doesn't exist yet
     try:
-        ws = sheet.worksheet(WORKSHEET_NAME)
+        ws = sheet.worksheet(cfg.GOOGLE_WORKSHEET_NAME)
     except gspread.WorksheetNotFound:
-        ws = sheet.add_worksheet(title=WORKSHEET_NAME, rows="1000", cols="10")
+        ws = sheet.add_worksheet(title=cfg.GOOGLE_WORKSHEET_NAME, rows="1000", cols="10")
         ws.append_row(HEADER_ROW)
-        logger.info(f"Created worksheet '{WORKSHEET_NAME}' with headers.")
+        logger.info(f"Created worksheet '{cfg.GOOGLE_WORKSHEET_NAME}' with headers.")
 
-    # Ensure header row exists
-    first_row = ws.row_values(1)
-    if first_row != HEADER_ROW:
+    # Ensure headers exist
+    if ws.row_values(1) != HEADER_ROW:
         ws.insert_row(HEADER_ROW, 1)
         logger.info("Header row inserted.")
 
     return ws
 
 
-# ── Read ───────────────────────────────────────
+# ── Read ─────────────────────────────────────────────────────────
 
 def get_all_leads() -> list[dict]:
-    """Return all rows from the sheet as a list of dicts."""
     ws      = _get_worksheet()
-    records = ws.get_all_records()   # Uses row 1 as header automatically
+    records = ws.get_all_records()
     logger.info(f"Fetched {len(records)} total leads from CRM.")
     return records
 
 
 def get_leads_by_status(status: str) -> list[dict]:
-    """Return only rows where the 'status' column matches the given value."""
     if status not in VALID_STATUSES:
         raise ValueError(f"Invalid status '{status}'. Must be one of: {VALID_STATUSES}")
-
     all_leads = get_all_leads()
     filtered  = [lead for lead in all_leads if lead.get("status") == status]
     logger.info(f"Found {len(filtered)} leads with status='{status}'.")
@@ -101,47 +94,35 @@ def get_leads_by_status(status: str) -> list[dict]:
 
 
 def find_row_by_email(email: str) -> int | None:
-    """
-    Return the 1-based row number for the given email, or None if not found.
-    We search column C (email).
-    """
-    ws       = _get_worksheet()
-    emails   = ws.col_values(COL["email"])   # ['email', 'alice@co.com', ...]
+    ws     = _get_worksheet()
+    emails = ws.col_values(COL["email"])
     try:
-        idx = emails.index(email)            # 0-based
-        return idx + 1                       # convert to 1-based row
+        return emails.index(email) + 1   # 1-based
     except ValueError:
         return None
 
 
-# ── Write ──────────────────────────────────────
+# ── Write ─────────────────────────────────────────────────────────
 
 def add_leads(leads: list[dict]) -> int:
-    """
-    Append new leads to the sheet. Skips leads whose email already exists.
-    Returns the count of actually-added rows.
-    """
-    ws             = _get_worksheet()
-    existing_emails = set(ws.col_values(COL["email"])[1:])  # Skip header
-    now            = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    added          = 0
+    ws              = _get_worksheet()
+    existing_emails = set(ws.col_values(COL["email"])[1:])
+    now             = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    rows_to_append  = []
+    added           = 0
 
-    rows_to_append = []
     for lead in leads:
         email = lead.get("email", "").strip()
         if not email or email in existing_emails:
-            logger.debug(f"Skipping duplicate or empty email: {email}")
             continue
-
-        row = [
+        rows_to_append.append([
             lead.get("business_name", ""),
             lead.get("website", ""),
             email,
             lead.get("status", "pending"),
-            now,   # date_added
-            now,   # last_updated
-        ]
-        rows_to_append.append(row)
+            now,
+            now,
+        ])
         existing_emails.add(email)
         added += 1
 
@@ -156,14 +137,13 @@ def add_leads(leads: list[dict]) -> int:
 
 def update_status(email: str, new_status: str) -> bool:
     """
-    Update the 'status' and 'last_updated' columns for a lead identified by email.
-    Returns True on success, False if email not found.
+    Update status for a lead by email.
 
-    Status values:
-      pending        → scraped, email not sent yet
-      unanswered     → initial email sent, no reply yet
-      not interested → AI determined they rejected the offer
-      closed client  → AI successfully negotiated the deal
+    Valid statuses:
+      pending        → scraped, not emailed yet
+      unanswered     → email sent, no reply
+      not interested → AI determined rejection
+      closed client  → deal closed by AI negotiation
     """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"Invalid status '{new_status}'. Must be one of: {VALID_STATUSES}")
@@ -175,28 +155,21 @@ def update_status(email: str, new_status: str) -> bool:
 
     ws  = _get_worksheet()
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
     ws.update_cell(row, COL["status"],       new_status)
     ws.update_cell(row, COL["last_updated"], now)
-
     logger.info(f"Updated '{email}' → status='{new_status}'")
     return True
 
 
 def bulk_update_status(email_status_pairs: list[tuple[str, str]]) -> None:
-    """
-    Batch update statuses for multiple leads.
-    email_status_pairs: list of (email, new_status) tuples.
-    """
     for email, status in email_status_pairs:
         update_status(email, status)
 
 
-# ── Stats / Reporting ──────────────────────────
+# ── Reporting ─────────────────────────────────────────────────────
 
 def print_crm_summary() -> None:
-    """Print a quick summary of lead counts by status."""
-    leads = get_all_leads()
+    leads  = get_all_leads()
     counts: dict[str, int] = {}
     for lead in leads:
         s = lead.get("status", "unknown")
@@ -204,11 +177,10 @@ def print_crm_summary() -> None:
 
     print("\n── CRM Summary ─────────────────────")
     for status, count in sorted(counts.items()):
-        print(f"  {status:<20} {count}")
-    print(f"  {'TOTAL':<20} {len(leads)}")
+        print(f"  {status:<22} {count}")
+    print(f"  {'TOTAL':<22} {len(leads)}")
     print("────────────────────────────────────\n")
 
 
-# ── Standalone test ────────────────────────────
 if __name__ == "__main__":
     print_crm_summary()

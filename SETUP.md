@@ -1,148 +1,174 @@
-# 🤖 Autonomous B2B Arbitrage Agency — Setup Guide
+# 🤖 Autonomous B2B Arbitrage Agency v2.0 — Setup Guide
 
 ## Project Structure
+
 ```
 b2b_agency/
+├── .env                     ← ⚠️  YOUR secrets (never commit this)
+├── .env.example             ← Template — copy this to .env and fill in
+├── .gitignore               ← Protects .env and credentials.json from Git
+├── config.py                ← Loads .env, validates all values, exports `cfg`
+│
 ├── main.py                  ← Orchestrator (run this)
 ├── scraper.py               ← Lead scraper
 ├── crm_manager.py           ← Google Sheets CRM
-├── outbound_mailer.py       ← Cold email sender (Groq + SMTP)
+├── outbound_mailer.py       ← Cold email sender
 ├── inbound_negotiator.py    ← Reply reader & AI negotiator
+│
 ├── requirements.txt         ← Python dependencies
-├── credentials.json         ← ⚠️ YOUR Google service account key (add manually)
+├── credentials.json         ← ⚠️  GCP Service Account key (add manually, never commit)
 └── agency.log               ← Auto-generated run log
 ```
+
+### Config Architecture (how secrets flow)
+
+```
+.env  ──→  config.py (loads + validates)  ──→  cfg singleton
+                                                    ↓
+                          scraper.py ←─────────────┤
+                          crm_manager.py ←──────────┤
+                          outbound_mailer.py ←───────┤
+                          inbound_negotiator.py ←────┘
+```
+
+**Rule:** Only `.env` holds secrets. Only `config.py` reads `.env`.
+Every other module imports `from config import cfg`.
 
 ---
 
 ## Step 1 — Python Environment
 
 ```bash
-# Create a virtual environment (recommended)
 python3 -m venv venv
 source venv/bin/activate        # macOS/Linux
 # venv\Scripts\activate         # Windows
 
-# Install all dependencies
 pip install -r requirements.txt
 ```
 
 ---
 
-## Step 2 — Groq API Key
-
-1. Go to https://console.groq.com
-2. Sign up for a free account
-3. Generate an API key
-4. Paste it in BOTH files:
-   - `outbound_mailer.py`   → `GROQ_API_KEY = "gsk_..."`
-   - `inbound_negotiator.py` → `GROQ_API_KEY = "gsk_..."`
-
----
-
-## Step 3 — Google Sheets CRM Setup
-
-### 3a. Create the Google Sheet
-1. Go to https://sheets.google.com
-2. Create a new sheet named exactly: **B2B Agency CRM**
-3. Inside it, create a tab named: **Leads**
-4. The script will auto-add headers on first run.
-
-### 3b. Create a Google Cloud Service Account
-1. Go to https://console.cloud.google.com
-2. Create a new project (e.g., "b2b-agency")
-3. Enable APIs:
-   - **Google Sheets API**
-   - **Google Drive API**
-4. Go to IAM & Admin → Service Accounts → Create Service Account
-5. Name it anything (e.g., "b2b-crm-bot")
-6. Click the service account → Keys tab → Add Key → JSON
-7. Download the JSON file
-8. Rename it to `credentials.json` and place it in the project folder
-
-### 3c. Share the Sheet with the Service Account
-1. Open `credentials.json` — find the `client_email` field (looks like `b2b-crm-bot@yourproject.iam.gserviceaccount.com`)
-2. Open your Google Sheet → Share → paste that email → Editor access
-
-### 3d. Update crm_manager.py
-```python
-SERVICE_ACCOUNT_FILE = "credentials.json"   # ← already set
-SPREADSHEET_NAME     = "B2B Agency CRM"     # ← must match exactly
-WORKSHEET_NAME       = "Leads"              # ← must match exactly
-```
-
----
-
-## Step 4 — Gmail SMTP + IMAP (Free Sending)
-
-Gmail is the easiest free SMTP/IMAP option. You MUST use an **App Password** (not your login password).
-
-### Enable App Passwords:
-1. Go to your Google Account → Security
-2. Enable **2-Step Verification** (required)
-3. Go to Security → **App Passwords**
-4. Select app: "Mail", device: "Other" → name it "B2B Agency"
-5. Copy the 16-character password shown
-
-### Update both files:
-In `outbound_mailer.py`:
-```python
-SMTP_HOST     = "smtp.gmail.com"
-SMTP_PORT     = 587
-SMTP_USERNAME = "yourgmail@gmail.com"
-SMTP_PASSWORD = "xxxx xxxx xxxx xxxx"   # ← 16-char App Password (no spaces needed)
-SENDER_NAME   = "Your Name"
-SENDER_EMAIL  = "yourgmail@gmail.com"
-```
-
-In `inbound_negotiator.py`:
-```python
-IMAP_HOST     = "imap.gmail.com"
-IMAP_PORT     = 993
-IMAP_USERNAME = "yourgmail@gmail.com"
-IMAP_PASSWORD = "xxxx xxxx xxxx xxxx"   # ← same App Password
-SMTP_HOST     = "smtp.gmail.com"
-# ... rest same as above
-```
-
-### Enable IMAP in Gmail:
-Gmail Settings → See all settings → Forwarding and POP/IMAP → Enable IMAP → Save
-
----
-
-## Step 5 — Configure Your Niche
-
-In `scraper.py`:
-```python
-TARGET_INDUSTRY = "digital marketing agency"  # ← your target niche
-TARGET_LOCATION = "New York"                  # ← your target city
-MAX_LEADS       = 50                          # ← leads per run
-```
-
-In `outbound_mailer.py`:
-```python
-AGENCY_OFFER = (
-    "We help {industry} businesses generate 3-5 qualified leads per week "
-    "using done-for-you LinkedIn outreach — no retainer, pay-per-result only."
-)
-SENDER_NAME = "Alex Morgan"    # ← use a real-sounding human name
-```
-
----
-
-## Step 6 — Running the Agency
+## Step 2 — Create Your .env File
 
 ```bash
-# Run everything once (scrape → email → check replies)
+cp .env.example .env
+```
+
+Then open `.env` and fill in every value. The sections below explain each one.
+
+---
+
+## Step 3 — Groq API Key
+
+1. Go to https://console.groq.com → sign up (free)
+2. Generate an API key
+3. Paste into `.env`:
+```
+GROQ_API_KEY=gsk_your_key_here
+GROQ_MODEL=llama3-70b-8192
+```
+
+---
+
+## Step 4 — Google Sheets CRM
+
+### 4a. Create the Sheet
+1. Go to https://sheets.google.com
+2. Create a new spreadsheet
+3. Name it exactly as you set in `.env` → `GOOGLE_SPREADSHEET_NAME`
+4. The script auto-creates headers on first run
+
+### 4b. GCP Service Account
+1. https://console.cloud.google.com → New project
+2. Enable: **Google Sheets API** + **Google Drive API**
+3. IAM & Admin → Service Accounts → Create
+4. Keys tab → Add Key → JSON → download
+5. Rename to `credentials.json`, place in project root
+
+### 4c. Share the Sheet
+Open `credentials.json`, copy the `client_email` value,
+then share your Google Sheet with it (Editor access).
+
+### 4d. Set in .env
+```
+GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
+GOOGLE_SPREADSHEET_NAME=B2B Agency CRM
+GOOGLE_WORKSHEET_NAME=Leads
+```
+
+---
+
+## Step 5 — Gmail SMTP + IMAP
+
+### Enable App Passwords (required for Gmail)
+1. Google Account → Security → 2-Step Verification (enable it)
+2. Security → App Passwords → create one named "B2B Agency"
+3. Copy the 16-character password
+
+### Enable IMAP in Gmail
+Gmail → Settings → See all settings → Forwarding and POP/IMAP → Enable IMAP
+
+### Set in .env
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=youremail@gmail.com
+SMTP_PASSWORD=xxxx xxxx xxxx xxxx
+SENDER_NAME=Alex Morgan
+SENDER_EMAIL=youremail@gmail.com
+
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_USERNAME=youremail@gmail.com
+IMAP_PASSWORD=xxxx xxxx xxxx xxxx
+IMAP_FOLDER=INBOX
+```
+
+---
+
+## Step 6 — Configure Your Niche
+
+In `.env`:
+```
+SCRAPER_TARGET_INDUSTRY=digital marketing agency
+SCRAPER_TARGET_LOCATION=New York
+SCRAPER_MAX_LEADS=50
+AGENCY_OFFER=We help {industry} businesses generate 3-5 qualified leads per week using done-for-you LinkedIn outreach — no retainer, pay-per-result only.
+SENDER_NAME=Alex Morgan
+```
+
+---
+
+## Step 7 — Validate Config Before First Run
+
+```bash
+python config.py
+```
+
+This prints a redacted summary of all settings and runs validation checks.
+Fix any errors reported before proceeding.
+
+---
+
+## Step 8 — Running the Agency
+
+```bash
+# Validate config only (secrets redacted)
+python main.py --config
+
+# Run everything once
 python main.py
 
-# Run on a loop (repeats every 60 min by default)
+# Run on a loop (repeats every LOOP_INTERVAL_SEC)
 python main.py --loop
 
-# Individual phases:
-python main.py --scrape     # Only scrape leads
-python main.py --outbound   # Only send pending emails
-python main.py --inbound    # Only check/negotiate replies
+# Skip scraper (if you're adding leads manually)
+python main.py --no-scrape
+
+# Individual phases
+python main.py --scrape
+python main.py --outbound
+python main.py --inbound
 ```
 
 ---
@@ -150,52 +176,50 @@ python main.py --inbound    # Only check/negotiate replies
 ## CRM Status Flow
 
 ```
-[scraper.py]  →  pending
-                   ↓
-[outbound_mailer.py]  →  unanswered
+[scraper]  ──→  pending
+                  ↓
+[outbound_mailer]  ──→  unanswered
                            ↓
-[inbound_negotiator.py]  →  not interested
-                          →  unanswered (still negotiating)
-                          →  closed client  🎉
+[inbound_negotiator]  ──→  not interested
+                       ──→  unanswered  (still negotiating — loops back)
+                       ──→  closed client  🎉
 ```
 
 ---
 
-## Free Tier Limits to Know
+## Security Checklist
 
-| Service       | Free Limit                              |
-|---------------|----------------------------------------|
-| Groq API      | 14,400 tokens/min (very generous)      |
-| Gmail SMTP    | 500 emails/day                         |
-| Google Sheets | 10M cells per spreadsheet              |
-| YellowPages   | No rate limit (be polite: use delays)  |
+- [ ] `.env` is in `.gitignore` (already done — do not remove it)
+- [ ] `credentials.json` is in `.gitignore` (already done)
+- [ ] You ran `python config.py` and saw ✅ Config validated
+- [ ] You never paste secrets directly into `.py` files
+- [ ] If deploying to a server: use environment variables or a secrets manager instead of `.env`
+
+---
+
+## Free Tier Limits
+
+| Service        | Free Limit                          |
+|----------------|-------------------------------------|
+| Groq API       | 14,400 tokens/min (very generous)   |
+| Gmail SMTP     | 500 emails/day                      |
+| Google Sheets  | 10M cells per spreadsheet           |
 
 ---
 
 ## Troubleshooting
 
-**"Authentication failed" on Gmail SMTP/IMAP:**
-→ Make sure you're using an App Password, not your account password.
-→ Make sure IMAP is enabled in Gmail settings.
+**`Missing required config: 'GROQ_API_KEY'`**
+→ You haven't created `.env` yet. Run: `cp .env.example .env` then fill it in.
 
-**"Spreadsheet not found" error:**
-→ The sheet name must match SPREADSHEET_NAME exactly (case-sensitive).
-→ The service account email must be shared with the sheet as Editor.
+**`SMTP authentication failed`**
+→ You need a Gmail App Password (not your login password). IMAP must also be enabled.
 
-**Groq API errors:**
-→ Check your API key at console.groq.com
-→ Verify you're using a supported model name (llama3-70b-8192 or mixtral-8x7b-32768)
+**`Google service account file not found`**
+→ `credentials.json` must be in the project root, and its path must match `GOOGLE_SERVICE_ACCOUNT_FILE` in `.env`.
 
-**Scraper returns 0 leads:**
-→ YellowPages changes its HTML structure occasionally. Check if `div.result` selector still works.
-→ Try running `scraper.py` standalone: `python scraper.py`
-→ If blocked, reduce scraping frequency or rotate User-Agent strings.
+**`Spreadsheet not found`**
+→ `GOOGLE_SPREADSHEET_NAME` must match the sheet name exactly (case-sensitive) and the service account email must have Editor access.
 
----
-
-## Legal & Ethical Notes
-
-- Only scrape publicly available business contact information.
-- Always include an unsubscribe option in your emails (CAN-SPAM / GDPR compliance).
-- Respect robots.txt of target websites.
-- Keep daily email volume under 100-200/day for new accounts to build sender reputation.
+**Scraper returns 0 leads**
+→ YellowPages changes HTML selectors occasionally. Test standalone: `python scraper.py`
